@@ -137,3 +137,79 @@ List Base Node 结构用于记录上述链表的信息：
 - Magic Number：魔数，记录这个段结构是否已经被初始化了
 - Fragment Array Entry：段是一些零散页面和一些完整的区的集合，每个Fragment Array Entry结构都**对应着一个零散的页面**，这个结构一共4个字节，表示一个零散页面的页号（超过 32 页时，将以区为单位分配空间）
 
+### 各页面的详细情况
+
+#### FSP_HDR
+
+表空间的第一个页面，页号为 0，它存储了表空间的一些整体属性以及第一个组内256个区的对应的`XDES Entry`结构
+
+![img](InnoDB的表空间.assets/16a739f4733af475.png)
+
+- File Space Header：存储**表空间**的一些属性
+
+  ![img](InnoDB的表空间.assets/16a739f47508ede5.png)
+
+  - Space ID:表空间 ID
+
+  - Size：当前表空间占用的页面数
+
+  - FREE Limit：尚未被初始化的最小页号，大于或等于这个页号的区对应的XDES Entry结构都没有被加入FREE链表
+
+    > 表空间对应着具体的磁盘文件，一开始创建表空间的时候对应的磁盘文件中都没有数据，所以需要对表空间完成一个初始化操作，包括为表空间中的区建立`XDES Entry`结构，为各个段建立`INODE Entry`结构，建立各种链表等各种操作。我们可以一开始就为表空间申请一个特别大的空间，但是实际上有绝大部分的区是空闲的，我们可以选择把所有的这些空闲区对应的`XDES Entry`结构加入`FREE`链表，也可以选择只把一部分的空闲区加入`FREE`链表，等啥时候空闲链表中的`XDES Entry`结构对应的区不够使了，再把之前没有加入`FREE`链表的空闲区对应的`XDES Entry`结构加入`FREE`链表，中心思想就是啥时候用到啥时候初始化，因此为表空间定义了`FREE Limit`这个字段，在该字段表示的页号之前的区都被初始化了，之后的区尚未被初始化
+
+  - FRAG_N_USED:FREE_FRAG链表中已使用的页面数量
+
+  - 三个 List Base Node ：表空间的三个链表基节点
+
+  - Next Unused Segment ID :当前表空间中下一个未使用的 Segment ID
+
+  - List Base Node for SEG_INODES_FULL List：SEG_INODES_FULL链表的基节点
+
+  - List Base Node for SEG_INODES_FREE List：SEG_INODES_FREE链表的基节点
+
+    > [INODE 类型中的链表基节点](#### INODE类型)
+
+- XDES Entry：存储本组 256 个区的信息
+
+  > 每个组的 XDES Entry 都在组中第一个页存储
+
+#### XDES 类型
+
+​	由于第一个组的第一个页面有些特殊，因为它也是整个表空间的第一个页面，所以除了记录本组中的所有区对应的`XDES Entry`结构以外，还记录着表空间的一些整体属性，这个页面的类型就是`FSP_HDR`类型，**整个表空间里只有一个这个类型的页面**。除去第一个分组以外，之后的每个分组的第一个页面只需要记录本组内所有的区对应的`XDES Entry`结构即可
+
+![img](InnoDB的表空间.assets/16a739f475c0ec2a.png)
+
+#### IBUF_BITMAP 类型
+
+暂略
+
+#### INODE 类型
+
+![img](InnoDB的表空间.assets/16ef3a8df380813e.png)
+
+- List Node for INODE Page List：存储上一个INODE页面和下一个INODE页面的指针（双向链表）
+
+  > 因为一个表空间中可能存在超过85个段，所以可能一个`INODE`类型的页面不足以存储所有的段对应的`INODE Entry`结构，所以就需要额外的`INODE`类型的页面来存储这些结构。因此将这些`INODE`类型的页面串联成两个不同的链表：
+  >
+  > - SEG_INODES_**FULL**链表：该链表中的INODE类型的页面中已经没有空闲空间来存储额外的INODE Entry结构了
+  > - SEG_INODES_**FREE**链表：该链表中的INODE类型的页面中还有空闲空间来存储额外的INODE Entry结构了。
+  >
+  > 基节点放在 FSP_HDR 中的 File Space Header 中。
+  >
+  > 创建一个新的段时：
+  >
+  > - 先看看`SEG_INODES_FREE`链表是否为空，如果不为空，直接从该链表中获取一个节点，也就相当于获取到一个仍有空闲空间的`INODE`类型的页面，然后把该`INODE Entry`结构放到该页面中。当该页面中无剩余空间时，就把该页放到`SEG_INODES_FULL`链表中
+  > - 如果`SEG_INODES_FREE`链表为空，则需要**从表空间的`FREE_FRAG`链表中申请一个页面**，修改该页面的类型为`INODE`，把该页面放到`SEG_INODES_FREE`链表中，与此同时把该`INODE Entry`结构放入该页面
+
+- INODE Entry：段信息
+
+  > 主要包括对应的段内零散页面的地址以及附属于该段的`FREE`、`NOT_FULL`和`FULL`链表的基节点。每个`INODE Entry`结构占用192字节，一个页面里可以存储`85`个这样的结构。
+
+  
+
+## 系统表空间
+
+​		系统表空间的结构和独立表空间基本类似，只不过由于整个MySQL进程只有一个系统表空间，在系统表空间中会额外记录一些有关整个系统信息的页面，所以会比独立表空间多出一些记录这些信息的页面。它的表空间 ID（Space ID）是0。
+
+参考：[表空间结构](https://juejin.cn/book/6844733769996304392/section/6844733770050830344)
+
